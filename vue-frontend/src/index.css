@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-100;
+}
+
+.container {
+  max-width: 1200px;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
