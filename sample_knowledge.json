@@ -1,0 +1,39 @@
+{
+    "sales_analysis": {
+        "patterns": {
+            "seasonal_trends": {
+                "summer": ["ice cream", "beverages", "outdoor equipment"],
+                "winter": ["heaters", "warm clothing", "comfort food"]
+            },
+            "customer_behavior": {
+                "peak_hours": ["11:00-13:00", "17:00-19:00"],
+                "weekend_preferences": ["family products", "entertainment", "dining"]
+            }
+        },
+        "business_rules": {
+            "minimum_stock": {
+                "fast_moving": "7 days stock",
+                "slow_moving": "30 days stock"
+            },
+            "reorder_points": {
+                "critical_items": "80% stock level",
+                "normal_items": "50% stock level"
+            }
+        },
+        "metrics": {
+            "key_kpis": [
+                "daily_sales_volume",
+                "customer_satisfaction",
+                "inventory_turnover",
+                "profit_margin"
+            ],
+            "thresholds": {
+                "good_performance": {
+                    "sales_growth": "> 5%",
+                    "customer_satisfaction": "> 4.5/5",
+                    "inventory_turnover": "< 30 days"
+                }
+            }
+        }
+    }
+}

@@ -14,6 +14,8 @@ import openai
 import clickhouse_connect
 from clickhouse_connect import get_client
 from dotenv import load_dotenv
+from decimal import Decimal
+from dateutil import parser
 
 # Load environment variables first
 load_dotenv()
@@ -117,145 +119,173 @@ class ClickHouseQueryGenerator:
         self.schema_cache = {}
         self.table_stats_cache = {}
         
+    def get_relevant_knowledge(self, query: str) -> Dict[str, Any]:
+        """Get relevant knowledge from knowledge base"""
+        try:
+            # Get recent knowledge entries
+            result = self.client.query("""
+                SELECT timestamp, knowledge_id, raw_knowledge, analysis, patterns
+                FROM knowledge_base
+                ORDER BY timestamp DESC
+                LIMIT 5
+            """)
+            
+            if not result.result_rows:
+                return {}
+            
+            # Combine knowledge entries
+            knowledge_base = {
+                row[1]: {
+                    'timestamp': row[0],
+                    'raw_knowledge': json.loads(row[2]),
+                    'analysis': row[3],
+                    'patterns': json.loads(row[4])
+                }
+                for row in result.result_rows
+            }
+            
+            # Use Azure OpenAI to find relevant knowledge
+            messages = [
+                {"role": "system", "content": "Find and return the most relevant knowledge patterns for the given query. Focus on query patterns, metrics, and business rules that could help answer the question."},
+                {"role": "user", "content": f"Query: {query}\nKnowledge Base: {json.dumps(knowledge_base)}"}
+            ]
+            
+            response = openai.ChatCompletion.create(
+                engine=OPENAI_DEPLOYMENT,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=1000
+            )
+            
+            return json.loads(response.choices[0].message.content)
+            
+        except Exception as e:
+            logger.error(f"Error retrieving knowledge: {str(e)}")
+            return {}
+
+    def learn_from_interaction(self, question: str, generated_query: str, results: Any, performance_metrics: Dict[str, Any]) -> None:
+        """Learn from each interaction to improve future responses"""
+        try:
+            # Create new knowledge entry
+            interaction_knowledge = {
+                "query_pattern": {
+                    "question_type": question,
+                    "generated_sql": generated_query,
+                    "performance": performance_metrics
+                },
+                "results_analysis": {
+                    "data_patterns": results if isinstance(results, (dict, list)) else str(results)[:1000],
+                    "metrics_used": performance_metrics.get("metrics_used", [])
+                }
+            }
+            
+            timestamp = datetime.now()
+            knowledge_id = f"k_learned_{timestamp.strftime('%Y%m%d_%H%M%S')}"
+            
+            # Analyze the interaction
+            messages = [
+                {"role": "system", "content": "Analyze this interaction and extract patterns, insights, and improvements for future queries."},
+                {"role": "user", "content": f"Interaction: {json.dumps(interaction_knowledge)}"}
+            ]
+            
+            analysis = openai.ChatCompletion.create(
+                engine=OPENAI_DEPLOYMENT,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=1000
+            ).choices[0].message.content
+            
+            # Extract patterns
+            patterns = openai.ChatCompletion.create(
+                engine=OPENAI_DEPLOYMENT,
+                messages=[
+                    {"role": "system", "content": "Convert the analysis into a structured JSON format with patterns, rules, and metrics."},
+                    {"role": "user", "content": analysis}
+                ],
+                temperature=0.1,
+                max_tokens=1000
+            ).choices[0].message.content
+            
+            # Store in knowledge base
+            self.client.command("""
+                INSERT INTO knowledge_base (
+                    timestamp, knowledge_id, raw_knowledge, analysis, patterns
+                ) VALUES (
+                    %(timestamp)s, %(knowledge_id)s, %(raw_knowledge)s, %(analysis)s, %(patterns)s
+                )
+            """, parameters={
+                'timestamp': timestamp,
+                'knowledge_id': knowledge_id,
+                'raw_knowledge': json.dumps(interaction_knowledge),
+                'analysis': analysis,
+                'patterns': patterns
+            })
+            
+            logger.info(f"Learned from interaction. Knowledge ID: {knowledge_id}")
+            
+        except Exception as e:
+            logger.error(f"Error learning from interaction: {str(e)}")
+
     def execute_query(self, query: str, description: str = "") -> Any:
         """Execute a query with logging and handle any data type."""
         try:
-            logger.info(f"Executing query: {description}")
-            logger.debug(f"Original SQL: {query}")
+            logger.info(f"Executing query: {description}\n{query}")
             
-            # Clean the query
-            query = query.strip()
+            # Execute the query
+            result = self.client.query(query)
             
-            # Remove any FORMAT clause
-            format_index = query.upper().rfind('FORMAT')
-            if format_index != -1:
-                query = query[:format_index].strip()
+            # Convert result to list of dictionaries
+            columns = result.column_names
+            rows = []
             
-            # Remove any trailing semicolons
-            query = query.rstrip(';')
+            for row in result.result_rows:
+                row_dict = {}
+                for i, col in enumerate(columns):
+                    # Handle different data types
+                    value = row[i]
+                    if hasattr(value, 'isoformat'):  # Handle any datetime-like object
+                        value = value.isoformat()
+                    elif isinstance(value, Decimal):
+                        value = float(value)
+                    row_dict[col] = value
+                rows.append(row_dict)
             
-            # Split on semicolon and take only the first statement
-            query = query.split(';')[0].strip()
-            
-            logger.debug(f"Cleaned SQL: {query}")
-            
-            start_time = datetime.now()
-            
-            try:
-                # First try with JSON format to handle all types
-                json_query = f"{query} FORMAT JSONEachRow"
-                result = self.client.query(json_query)
-                
-                # Parse the JSON result
-                result_data = {
-                    "columns": result.column_names,
-                    "rows": []
-                }
-                
-                for row in result.result_rows:
-                    formatted_row = []
-                    for val in row:
-                        formatted_row.append(val)
-                    result_data["rows"].append(formatted_row)
-                    
-            except Exception as format_error:
-                logger.warning(f"JSON format failed, trying native format: {format_error}")
-                
-                # Fallback to native format with safe conversion
-                result = self.client.query(query)
-                
-                result_data = {
-                    "columns": result.column_names,
-                    "rows": []
-                }
-                
-                for row in result.result_rows:
-                    formatted_row = []
-                    for val in row:
-                        # Safe conversion of any type
-                        try:
-                            if val is None:
-                                formatted_row.append(None)
-                            elif isinstance(val, (int, float, bool)):
-                                formatted_row.append(val)
-                            elif isinstance(val, (bytes, bytearray)):
-                                formatted_row.append(val.hex())
-                            else:
-                                formatted_row.append(str(val))
-                        except Exception as e:
-                            logger.warning(f"Error converting value {val}: {e}")
-                            formatted_row.append(str(val))
-                    result_data["rows"].append(formatted_row)
-            
-            duration = (datetime.now() - start_time).total_seconds()
-            row_count = len(result_data["rows"])
-            logger.info(f"Query completed in {duration:.2f}s, returned {row_count} rows")
-            
-            return result_data
+            logger.info(f"Query executed successfully. Found {len(rows)} rows")
+            return rows
             
         except Exception as e:
-            logger.error(f"Query failed: {description}")
-            logger.error(f"SQL: {query}")
-            logger.error(f"Error: {str(e)}")
-            logger.error(traceback.format_exc())
-            
-            # Return error in a structured format
-            return {
-                "error": str(e),
-                "query": query,
-                "columns": [],
-                "rows": []
-            }
+            error_msg = f"Error executing query: {str(e)}"
+            logger.error(f"{error_msg}\nQuery: {query}")
+            raise Exception(error_msg)
 
-    def get_table_schema(self, table_name: str) -> Dict[str, Dict[str, str]]:
+    def get_table_schema(self, table_name: str) -> Dict[str, str]:
         """Get detailed schema information for a table."""
-        if table_name in self.schema_cache:
-            return self.schema_cache[table_name]
-        
         try:
-            logger.info(f"Getting schema for table: {table_name}")
-            query = f"""
-            SELECT 
-                name,
-                type,
-                default_expression,
-                comment,
-                is_in_primary_key,
-                is_in_partition_key,
-                compression_codec
-            FROM system.columns 
-            WHERE table = '{table_name}'
-            AND database = currentDatabase()
+            if table_name in self.schema_cache:
+                return self.schema_cache[table_name]
+            
+            # Query table schema
+            schema_query = f"""
+            DESCRIBE {table_name}
             """
-            # Remove newlines and extra spaces
-            query = ' '.join(query.split())
             
-            result = self.execute_query(query, f"Get schema for {table_name}")
-            rows = result["rows"]
+            result = self.client.query(schema_query)
             
-            if not rows:
-                logger.warning(f"No schema found for table {table_name}")
-                return None
-            
+            # Build schema dictionary
             schema = {}
-            for row in rows:
-                name, type_, default, comment, is_pk, is_part, codec = row
+            for row in result.result_rows:
+                name, type_, default = row[0], row[1], row[3] if len(row) > 3 else None
                 schema[name] = {
                     'type': type_,
-                    'default': default,
-                    'comment': comment,
-                    'is_primary_key': bool(is_pk),
-                    'is_partition_key': bool(is_part),
-                    'compression': codec
+                    'default': default
                 }
             
-            logger.info(f"Found {len(schema)} columns for table {table_name}")
             self.schema_cache[table_name] = schema
             return schema
             
         except Exception as e:
-            logger.error(f"Error getting schema for table {table_name}: {e}")
-            return None
+            logger.error(f"Error getting schema for table {table_name}: {str(e)}")
+            return {}
 
     def get_table_statistics(self, table_name: str) -> Dict[str, Any]:
         """Get detailed statistics about a table using MCP ClickHouse."""
@@ -280,19 +310,19 @@ class ClickHouseQueryGenerator:
             """
             table_result = self.execute_query(table_query, f"Get stats for {table_name}")
             
-            if not table_result["rows"]:
+            if not table_result:
                 return None
                 
-            row = table_result["rows"][0]
+            row = table_result[0]
             stats = {
-                'name': row[0],
-                'total_rows': row[1],
-                'total_bytes': row[2],
-                'engine': row[3],
-                'partition_key': row[4],
-                'sorting_key': row[5],
-                'primary_key': row[6],
-                'sampling_key': row[7],
+                'name': row['table'],
+                'total_rows': row['total_rows'],
+                'total_bytes': row['total_bytes'],
+                'engine': row['engine'],
+                'partition_key': row['partition_key'],
+                'sorting_key': row['sorting_key'],
+                'primary_key': row['primary_key'],
+                'sampling_key': row['sampling_key'],
                 'column_stats': {}
             }
             
@@ -322,16 +352,16 @@ class ClickHouseQueryGenerator:
                 """
                 try:
                     stats_result = self.execute_query(stats_query, f"Get column stats for {table_name}")
-                    if stats_result["rows"]:
-                        row = stats_result["rows"][0]
+                    if stats_result:
+                        row = stats_result[0]
                         for i, col in enumerate(numeric_columns):
                             base_idx = i * 5  # 5 stats per column
                             stats['column_stats'][col] = {
-                                'min': row[base_idx] if row[base_idx] is not None else 0,
-                                'max': row[base_idx + 1] if row[base_idx + 1] is not None else 0,
-                                'avg': row[base_idx + 2] if row[base_idx + 2] is not None else 0,
-                                'count': row[base_idx + 3] if row[base_idx + 3] is not None else 0,
-                                'unique_count': row[base_idx + 4] if row[base_idx + 4] is not None else 0
+                                'min': row[f'min_{col}'] if row[f'min_{col}'] is not None else 0,
+                                'max': row[f'max_{col}'] if row[f'max_{col}'] is not None else 0,
+                                'avg': row[f'avg_{col}'] if row[f'avg_{col}'] is not None else 0,
+                                'count': row[f'count_{col}'] if row[f'count_{col}'] is not None else 0,
+                                'unique_count': row[f'unique_{col}'] if row[f'unique_{col}'] is not None else 0
                             }
                 except Exception as e:
                     logger.error(f"Error getting column stats for {table_name}: {e}")
@@ -365,72 +395,100 @@ class ClickHouseQueryGenerator:
         return query
 
     def generate_query(self, question: str) -> str:
-        """Generate a SQL query based on the question."""
+        """Generate a SQL query based on the question using knowledge base"""
         try:
-            logger.info(f"Generating query for question: {question}")
+            # Get relevant knowledge
+            relevant_knowledge = self.get_relevant_knowledge(question)
             
-            # Get available tables info for context
-            tables_query = """
-            SELECT name, engine, total_rows
-            FROM system.tables 
-            WHERE database = currentDatabase()
+            # Get table schema for context
+            schema_query = """
+            DESCRIBE ProductWiseDemandSales
             """
-            tables_result = self.execute_query(tables_query, "Get available tables")
+            schema_result = self.client.query(schema_query)
+            schema = {
+                row[0]: {
+                    'type': row[1],
+                    'default': row[3] if len(row) > 3 else None
+                }
+                for row in schema_result.result_rows
+            }
             
-            # Build context about available tables
-            table_context = []
-            for row in tables_result["rows"]:
-                table, engine, rows = row
-                # Get schema for the table
-                schema = self.get_table_schema(table)
-                if schema:
-                    columns = list(schema.keys())
-                    table_context.append(f"Table '{table}' ({rows} rows) with columns: {', '.join(columns)}")
+            # Add example query for context
+            example_query = """
+            -- Example query format:
+            SELECT 
+                ProductId,
+                ProductErpId,
+                SUM(InvoiceTotalValue) as total_value
+            FROM ProductWiseDemandSales
+            WHERE 
+                CompanyId = 10830
+                AND InvoiceDateKey BETWEEN 20241101 AND 20241130
+            GROUP BY 
+                ProductId,
+                ProductErpId
+            ORDER BY 
+                total_value DESC
+            LIMIT 5
+            """
             
-            table_info = "\n".join(table_context)
+            # Use Azure OpenAI to generate query
+            messages = [
+                {"role": "system", "content": f"""You are a ClickHouse SQL expert. Generate SQL queries following these rules:
+                1. Always start with SELECT
+                2. Only use existing table columns from this schema: {json.dumps(schema)}
+                3. Include proper WHERE clauses
+                4. Use appropriate aggregations
+                5. For date fields ending in 'Key' (like OrderDateKey, InvoiceDateKey), they are in YYYYMMDD format
+                6. Do not include semicolons or comments
+                7. Ensure queries are performant
+                8. Always alias columns with meaningful names
+                9. Use proper GROUP BY and ORDER BY clauses
+                10. Include LIMIT when requesting top N results
+                11. Use the exact table name: ProductWiseDemandSales
+                12. The table has these important fields:
+                    - CompanyId: Int64
+                    - InvoiceTotalValue: Decimal
+                    - ProductId: Int64
+                    - OrderDate: DateTime64(3)
+                """},
+                {"role": "user", "content": f"""Question: {question}
+                Available Columns: {', '.join(schema.keys())}
+                Relevant Knowledge: {json.dumps(relevant_knowledge)}
+                Example Query Format: {example_query}
+                
+                Generate a ClickHouse SQL query that:
+                1. Is properly formatted
+                2. Uses knowledge base patterns
+                3. Includes all necessary columns
+                4. Has proper filtering
+                5. Handles dates correctly (YYYYMMDD format for date keys)
+                6. Follows the example query format
+                """}
+            ]
             
-            # Prepare the prompt
-            prompt = f"""You are a ClickHouse SQL expert. Generate a SQL query to answer this question: {question}
-
-Available tables and their schemas:
-{table_info}
-
-Rules:
-1. Use only the tables and columns listed above
-2. For better performance, only select needed columns
-3. Add FINAL if using ReplacingMergeTree tables
-4. Use proper aggregations when needed
-5. Keep the query simple and efficient
-6. DO NOT add semicolons or FORMAT clauses
-7. DO NOT use multiple statements
-8. If dealing with timestamps, use toDateTime() for conversion
-9. For date/time operations, use proper ClickHouse functions
-
-Return only the SQL query, nothing else."""
-
-            logger.info("Sending request to OpenAI...")
             response = openai.ChatCompletion.create(
                 engine=OPENAI_DEPLOYMENT,
-                messages=[
-                    {"role": "system", "content": "You are a ClickHouse SQL expert. Generate only SQL queries, no explanations."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0,
-                max_tokens=500
+                messages=messages,
+                temperature=0.1,
+                max_tokens=1000
             )
             
-            sql_query = response.choices[0].message.content.strip()
-            logger.info(f"Raw generated SQL query: {sql_query}")
+            query = response.choices[0].message.content.strip()
             
-            # Clean and validate the query
-            sql_query = self.clean_sql_query(sql_query)
-            logger.info(f"Cleaned SQL query: {sql_query}")
+            # Ensure the query starts with SELECT
+            if not query.upper().startswith('SELECT'):
+                raise ValueError("Generated query must start with SELECT")
             
-            return sql_query
+            # Remove any comments or semicolons
+            query = '\n'.join(line for line in query.split('\n') if not line.strip().startswith('--'))
+            query = query.strip().rstrip(';')
+            
+            logger.info(f"Generated query: {query}")
+            return query
             
         except Exception as e:
-            logger.error(f"Error generating query: {e}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Error generating query: {str(e)}")
             raise
 
     def optimize_query(self, query: str) -> str:
@@ -440,8 +498,8 @@ Return only the SQL query, nothing else."""
             tables_query = "SELECT name, engine FROM system.tables WHERE database = currentDatabase()"
             tables_result = self.execute_query(tables_query, "Get table engines")
             
-            for row in tables_result["rows"]:
-                table, engine = row
+            for row in tables_result:
+                table, engine = row['name'], row['engine']
                 if 'ReplacingMergeTree' in engine and f'FROM {table}' in query and 'FINAL' not in query:
                     query = query.replace(f'FROM {table}', f'FROM {table} FINAL')
             
@@ -455,73 +513,69 @@ Return only the SQL query, nothing else."""
         try:
             explain_query = f"EXPLAIN pipeline {query}"
             result = self.execute_query(explain_query, "Explain query")
-            return "\n".join(row[0] for row in result["rows"])
+            return "\n".join(row['explain'] for row in result)
         except Exception as e:
             logger.error(f"Error explaining query: {e}")
             return ""
 
 @app.post("/analyze")
 async def analyze_data(query: Query):
-    """Analyze data based on the question."""
+    """Analyze data based on the question"""
     try:
-        logger.info(f"Analyzing data for question: {query.question}")
+        start_time = datetime.now()
+        logger.info(f"Starting analysis for question: {query.question}")
         
         # Initialize query generator
-        logger.info("Initializing query generator...")
-        query_generator = ClickHouseQueryGenerator()
+        generator = ClickHouseQueryGenerator()
         
-        # Generate and execute the query
-        sql_query = query_generator.generate_query(query.question)
-        result = query_generator.execute_query(sql_query, "Main analysis query")
+        # Generate and optimize query
+        logger.info("Generating SQL query...")
+        sql_query = generator.generate_query(query.question)
+        logger.info(f"Generated query: {sql_query}")
         
-        # Check for errors
-        if "error" in result:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Query failed: {result['error']}"
-            )
+        optimized_query = generator.optimize_query(sql_query)
+        logger.info(f"Optimized query: {optimized_query}")
         
-        # Get query explanation
-        explanation_prompt = f"""Explain this SQL query in simple terms:
-{sql_query}
-
-Explain:
-1. What data it's retrieving
-2. Any calculations or aggregations
-3. Any filters or conditions
-4. The expected output
-
-Keep it concise and user-friendly."""
-
-        explanation_response = openai.ChatCompletion.create(
-            engine=OPENAI_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": "You are a SQL expert explaining queries to users."},
-                {"role": "user", "content": explanation_prompt}
-            ],
-            temperature=0.3,
-            max_tokens=200
-        )
+        # Execute query
+        logger.info("Executing query...")
+        results = generator.execute_query(optimized_query, "Analyzing data based on question")
+        logger.info(f"Query execution complete. Results: {results[:100] if results else 'No results'}")
         
-        explanation = explanation_response.choices[0].message.content.strip()
-        
-        # Format response
-        response = {
-            "query": sql_query,
-            "explanation": explanation,
-            "columns": result["columns"],
-            "rows": result["rows"],
-            "message": f"Found {len(result['rows'])} results"
+        # Calculate performance metrics
+        end_time = datetime.now()
+        performance_metrics = {
+            "execution_time_ms": (end_time - start_time).total_seconds() * 1000,
+            "query_complexity": len(sql_query.split()),
+            "metrics_used": [col for col in results[0].keys()] if results else []
         }
         
-        return response
+        # Learn from this interaction
+        logger.info("Learning from interaction...")
+        generator.learn_from_interaction(
+            question=query.question,
+            generated_query=optimized_query,
+            results=results,
+            performance_metrics=performance_metrics
+        )
+        
+        response_data = {
+            "query": optimized_query,
+            "results": results,
+            "performance": performance_metrics
+        }
+        
+        logger.info("Analysis complete")
+        return response_data
         
     except Exception as e:
-        logger.error(f"Error in analyze_data: {e}")
-        logger.error(traceback.format_exc())
+        error_msg = f"Error in analyze_data: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
         raise HTTPException(
             status_code=500,
-            detail=f"Analysis failed: {str(e)}"
+            detail={
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
         )
 
 @app.get("/tables")
@@ -534,8 +588,8 @@ async def get_tables():
         tables_query = "SELECT DISTINCT name as table FROM system.tables WHERE database = currentDatabase()"
         tables_result = query_generator.execute_query(tables_query, "Get available tables")
         
-        for row in tables_result["rows"]:
-            table_name = row[0]
+        for row in tables_result:
+            table_name = row['table']
             try:
                 stats = query_generator.get_table_statistics(table_name)
                 if stats:
@@ -613,7 +667,7 @@ async def test_db():
         
         # Get list of tables
         tables_result = client.query("SELECT name FROM system.tables WHERE database = currentDatabase()")
-        tables = [row[0] for row in tables_result.result_rows]
+        tables = [row['name'] for row in tables_result]
         
         return {
             "status": "ok",

@@ -1,0 +1,84 @@
+{
+    "product_demand_sales": {
+        "table_structure": {
+            "key_fields": {
+                "ProductId": "Unique identifier for products",
+                "ProductErpId": "ERP system product identifier",
+                "DistributorId": "Unique identifier for distributors",
+                "WarehouseErpId": "ERP system warehouse identifier",
+                "SuperStockistId": "Identifier for super stockists",
+                "OrderDateKey": "Integer date key in YYYYMMDD format (e.g., 20240224 for Feb 24, 2024)",
+                "InvoiceDateKey": "Integer date key in YYYYMMDD format (e.g., 20240224 for Feb 24, 2024)",
+                "CompanyId": "Identifier for the company"
+            },
+            "value_fields": {
+                "InvoiceTotalValue": "Total value of the invoice including taxes and charges",
+                "OrderGrossValue": "Gross value of the order before adjustments"
+            }
+        },
+        "business_rules": {
+            "date_handling": {
+                "primary_date_fields": ["OrderDateKey", "InvoiceDateKey"],
+                "format": "Integer YYYYMMDD",
+                "examples": [
+                    "20240224 for February 24, 2024",
+                    "20240101 for January 1, 2024",
+                    "20231231 for December 31, 2023"
+                ]
+            },
+            "date_comparisons": {
+                "range_queries": [
+                    "OrderDateKey BETWEEN 20240101 AND 20240131 for January 2024",
+                    "InvoiceDateKey >= 20240101 for dates from 2024 onwards",
+                    "OrderDateKey <= 20231231 for dates until end of 2023"
+                ],
+                "specific_date": [
+                    "OrderDateKey = 20240224 for exact date match",
+                    "InvoiceDateKey = 20240224 for specific invoice date"
+                ]
+            },
+            "hierarchy": {
+                "distribution_chain": [
+                    "Company → SuperStockist → Distributor → Warehouse"
+                ]
+            },
+            "filters": {
+                "common_date_ranges": [
+                    "Monthly (e.g., OrderDateKey BETWEEN 20240101 AND 20240131)",
+                    "Quarterly (e.g., OrderDateKey BETWEEN 20240101 AND 20240331)",
+                    "Year to Date (e.g., OrderDateKey >= 20240101)"
+                ]
+            }
+        },
+        "analysis_patterns": {
+            "time_based": {
+                "daily_trends": "Analyze patterns using OrderDateKey for orders or InvoiceDateKey for invoices",
+                "monthly_comparison": "Compare across months using OrderDateKey/InvoiceDateKey ranges",
+                "seasonal_patterns": "Identify trends using OrderDateKey across different seasons",
+                "order_to_invoice_lag": "Analyze time difference between OrderDateKey and InvoiceDateKey"
+            },
+            "product_based": {
+                "top_products": "Identify products with highest InvoiceTotalValue within specific date ranges",
+                "product_performance": "Compare OrderGrossValue vs InvoiceTotalValue with date-based analysis",
+                "product_distribution": "Analysis across different warehouses with temporal patterns"
+            },
+            "distributor_based": {
+                "distributor_performance": "Track sales by DistributorId over time periods",
+                "warehouse_efficiency": "Analysis by WarehouseErpId with date-based metrics",
+                "stockist_analysis": "Performance metrics by SuperStockistId with temporal trends"
+            }
+        },
+        "query_examples": {
+            "basic_queries": [
+                "Show total sales for January 2024 (OrderDateKey BETWEEN 20240101 AND 20240131)",
+                "Compare orders vs invoices for last quarter (OrderDateKey and InvoiceDateKey analysis)",
+                "Find products with highest demand in specific date range"
+            ],
+            "advanced_queries": [
+                "Analyze order to invoice processing time using OrderDateKey and InvoiceDateKey difference",
+                "Track seasonal trends using OrderDateKey patterns",
+                "Compare year-over-year performance using OrderDateKey ranges"
+            ]
+        }
+    }
+}
