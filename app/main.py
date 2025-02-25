@@ -384,10 +384,6 @@ class ClickHouseQueryGenerator:
         if format_index != -1:
             query = query[:format_index].strip()
             
-        # Ensure it starts with SELECT
-        if not query.upper().startswith('SELECT'):
-            raise ValueError("Query must start with SELECT")
-            
         # Add LIMIT if not present
         if 'LIMIT' not in query.upper():
             query += ' LIMIT 1000'
@@ -397,74 +393,48 @@ class ClickHouseQueryGenerator:
     def generate_query(self, question: str) -> str:
         """Generate a SQL query based on the question using knowledge base"""
         try:
-            # Get relevant knowledge
-            relevant_knowledge = self.get_relevant_knowledge(question)
+            # Load the knowledge base first
+            with open('product_demand_knowledge.json', 'r') as f:
+                knowledge_base = json.load(f)
             
-            # Get table schema for context
-            schema_query = """
-            DESCRIBE ProductWiseDemandSales
+            # Get the schema from ClickHouse
+            schema = self.get_table_schema('ProductWiseDemandSales')
+            
+            # Create the system prompt using the knowledge base
+            system_prompt = f"""You are an AI data analyst specialized in analyzing product demand and sales data.
+            
+            IMPORTANT KNOWLEDGE BASE RULES:
+            1. Date Handling:
+            {json.dumps(knowledge_base['product_demand_sales']['business_rules']['date_handling'], indent=2)}
+            
+            2. Value Calculations:
+            {json.dumps(knowledge_base['product_demand_sales']['business_rules']['value_calculation_rules'], indent=2)}
+            
+            3. Analysis Patterns:
+            {json.dumps(knowledge_base['product_demand_sales']['analysis_patterns'], indent=2)}
+            
+            QUERY GUIDELINES:
+            1. Use only these fields and follow their exact usage:
+            {json.dumps(knowledge_base['product_demand_sales']['table_structure'], indent=2)}
+            
+            2. Follow these example patterns:
+            {json.dumps(knowledge_base['product_demand_sales']['query_examples'], indent=2)}
+            
+            3. Additional Rules:
+            - ALWAYS use the exact table name: ProductWiseDemandSales
+            - NEVER use any other table name (like 'sales')
+            - Only use existing table columns from this schema: {json.dumps(schema)}
+            - Include proper WHERE clauses
+            - Use appropriate aggregations
+            - Do not include semicolons or comments
+            - Ensure queries are performant
+            - Always alias columns with meaningful names
+            - ALWAYS start queries with SELECT
             """
-            schema_result = self.client.query(schema_query)
-            schema = {
-                row[0]: {
-                    'type': row[1],
-                    'default': row[3] if len(row) > 3 else None
-                }
-                for row in schema_result.result_rows
-            }
             
-            # Add example query for context
-            example_query = """
-            -- Example query format:
-            SELECT 
-                ProductId,
-                ProductErpId,
-                SUM(InvoiceTotalValue) as total_value
-            FROM ProductWiseDemandSales
-            WHERE 
-                CompanyId = 10830
-                AND InvoiceDateKey BETWEEN 20241101 AND 20241130
-            GROUP BY 
-                ProductId,
-                ProductErpId
-            ORDER BY 
-                total_value DESC
-            LIMIT 5
-            """
-            
-            # Use Azure OpenAI to generate query
             messages = [
-                {"role": "system", "content": f"""You are a ClickHouse SQL expert. Generate SQL queries following these rules:
-                1. Always start with SELECT
-                2. Only use existing table columns from this schema: {json.dumps(schema)}
-                3. Include proper WHERE clauses
-                4. Use appropriate aggregations
-                5. For date fields ending in 'Key' (like OrderDateKey, InvoiceDateKey), they are in YYYYMMDD format
-                6. Do not include semicolons or comments
-                7. Ensure queries are performant
-                8. Always alias columns with meaningful names
-                9. Use proper GROUP BY and ORDER BY clauses
-                10. Include LIMIT when requesting top N results
-                11. Use the exact table name: ProductWiseDemandSales
-                12. The table has these important fields:
-                    - CompanyId: Int64
-                    - InvoiceTotalValue: Decimal
-                    - ProductId: Int64
-                    - OrderDate: DateTime64(3)
-                """},
-                {"role": "user", "content": f"""Question: {question}
-                Available Columns: {', '.join(schema.keys())}
-                Relevant Knowledge: {json.dumps(relevant_knowledge)}
-                Example Query Format: {example_query}
-                
-                Generate a ClickHouse SQL query that:
-                1. Is properly formatted
-                2. Uses knowledge base patterns
-                3. Includes all necessary columns
-                4. Has proper filtering
-                5. Handles dates correctly (YYYYMMDD format for date keys)
-                6. Follows the example query format
-                """}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Question: {question}\nAvailable Columns: {', '.join(schema.keys())}"}
             ]
             
             response = openai.ChatCompletion.create(
@@ -476,13 +446,9 @@ class ClickHouseQueryGenerator:
             
             query = response.choices[0].message.content.strip()
             
-            # Ensure the query starts with SELECT
-            if not query.upper().startswith('SELECT'):
-                raise ValueError("Generated query must start with SELECT")
-            
-            # Remove any comments or semicolons
-            query = '\n'.join(line for line in query.split('\n') if not line.strip().startswith('--'))
-            query = query.strip().rstrip(';')
+            # Clean and optimize the query
+            query = self.clean_sql_query(query)
+            query = self.optimize_query(query)
             
             logger.info(f"Generated query: {query}")
             return query

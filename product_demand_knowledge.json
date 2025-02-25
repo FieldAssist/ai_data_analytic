@@ -7,78 +7,83 @@
                 "DistributorId": "Unique identifier for distributors",
                 "WarehouseErpId": "ERP system warehouse identifier",
                 "SuperStockistId": "Identifier for super stockists",
-                "OrderDateKey": "Integer date key in YYYYMMDD format (e.g., 20240224 for Feb 24, 2024)",
-                "InvoiceDateKey": "Integer date key in YYYYMMDD format (e.g., 20240224 for Feb 24, 2024)",
-                "CompanyId": "Identifier for the company"
+                "OrderDateKey": "Integer date key in YYYYMMDD format (e.g., 20240224). ALWAYS use this for order-based analysis. DO NOT use OrderDate.",
+                "InvoiceDateKey": "Integer date key in YYYYMMDD format (e.g., 20240224). ALWAYS use this for invoice-based analysis. DO NOT use InvoiceDate.",
+                "CompanyId": "Identifier for the company",
+                "FAOrderId": "Unique identifier for orders. Use this for counting unique orders."
             },
             "value_fields": {
-                "InvoiceTotalValue": "Total value of the invoice including taxes and charges",
-                "OrderGrossValue": "Gross value of the order before adjustments"
+                "OrderTotalValue": "Total value of the order including all charges (use this for order value queries)",
+                "InvoiceTotalValue": "Total value of the invoice including taxes and charges (for invoice-specific analysis)",
+                "OrderGrossValue": "Gross value of the order before adjustments",
+                "SchemeQtyInvoiced": "Quantity of items invoiced under schemes",
+                "SchemeQtyOrdered": "Quantity of items ordered under schemes",
+                "PrimarySchemeDiscountInInvoice": "Primary scheme discount amount in invoice",
+                "PrimarySchemeDiscountInOrder": "Primary scheme discount amount in order",
+                "TotalSchemeDiscountInInvoice": "Total scheme discount amount in invoice",
+                "SecondarySchemeDiscountInInvoice": "Secondary scheme discount amount in invoice",
+                "SecondarySchemeDiscountInOrder": "Secondary scheme discount amount in order",
+                "InvoiceCGST": "Central GST amount in invoice",
+                "InvoiceIGST": "Integrated GST amount in invoice",
+                "InvoiceSGST": "State GST amount in invoice",
+                "InvoiceUTGST": "Union Territory GST amount in invoice",
+                "ProductCGST": "Central GST amount at product level",
+                "ProductIGST": "Integrated GST amount at product level",
+                "ProductSGST": "State GST amount at product level",
+                "ProductUTGST": "Union Territory GST amount at product level"
             }
         },
         "business_rules": {
             "date_handling": {
-                "primary_date_fields": ["OrderDateKey", "InvoiceDateKey"],
-                "format": "Integer YYYYMMDD",
-                "examples": [
-                    "20240224 for February 24, 2024",
-                    "20240101 for January 1, 2024",
-                    "20231231 for December 31, 2023"
-                ]
+                "use_datekeys": "ALWAYS use OrderDateKey and InvoiceDateKey in YYYYMMDD format",
+                "avoid_date_columns": "NEVER use OrderDate or InvoiceDate columns",
+                "date_format": "All dates must be in integer YYYYMMDD format (e.g., 20240225)"
             },
-            "date_comparisons": {
-                "range_queries": [
-                    "OrderDateKey BETWEEN 20240101 AND 20240131 for January 2024",
-                    "InvoiceDateKey >= 20240101 for dates from 2024 onwards",
-                    "OrderDateKey <= 20231231 for dates until end of 2023"
-                ],
-                "specific_date": [
-                    "OrderDateKey = 20240224 for exact date match",
-                    "InvoiceDateKey = 20240224 for specific invoice date"
-                ]
-            },
-            "hierarchy": {
-                "distribution_chain": [
-                    "Company → SuperStockist → Distributor → Warehouse"
-                ]
-            },
-            "filters": {
-                "common_date_ranges": [
-                    "Monthly (e.g., OrderDateKey BETWEEN 20240101 AND 20240131)",
-                    "Quarterly (e.g., OrderDateKey BETWEEN 20240101 AND 20240331)",
-                    "Year to Date (e.g., OrderDateKey >= 20240101)"
-                ]
+            "value_calculation_rules": {
+                "order_value": "Always use OrderTotalValue for total order value including all charges",
+                "invoice_value": "Use InvoiceTotalValue for total invoice value including taxes",
+                "gross_value": "OrderGrossValue represents value before adjustments",
+                "gst_calculation": "Sum of CGST, SGST, IGST, and UTGST gives total GST",
+                "scheme_discounts": "TotalSchemeDiscountInInvoice includes both primary and secondary discounts",
+                "order_counting": "Use COUNT(DISTINCT FAOrderId) for counting unique orders"
             }
         },
         "analysis_patterns": {
             "time_based": {
-                "daily_trends": "Analyze patterns using OrderDateKey for orders or InvoiceDateKey for invoices",
-                "monthly_comparison": "Compare across months using OrderDateKey/InvoiceDateKey ranges",
-                "seasonal_patterns": "Identify trends using OrderDateKey across different seasons",
-                "order_to_invoice_lag": "Analyze time difference between OrderDateKey and InvoiceDateKey"
+                "daily_trends": "ALWAYS use OrderDateKey for order analysis and InvoiceDateKey for invoice analysis in YYYYMMDD format",
+                "monthly_comparison": "Use integer datekey ranges (e.g., OrderDateKey BETWEEN 20240101 AND 20240131)",
+                "seasonal_patterns": "Group by OrderDateKey or InvoiceDateKey using integer YYYYMMDD format"
             },
-            "product_based": {
-                "top_products": "Identify products with highest InvoiceTotalValue within specific date ranges",
-                "product_performance": "Compare OrderGrossValue vs InvoiceTotalValue with date-based analysis",
-                "product_distribution": "Analysis across different warehouses with temporal patterns"
-            },
-            "distributor_based": {
-                "distributor_performance": "Track sales by DistributorId over time periods",
-                "warehouse_efficiency": "Analysis by WarehouseErpId with date-based metrics",
-                "stockist_analysis": "Performance metrics by SuperStockistId with temporal trends"
+            "value_based": {
+                "total_value": "Use appropriate total value field based on context (OrderTotalValue vs InvoiceTotalValue)",
+                "discount_analysis": "Consider both primary and secondary scheme discounts",
+                "tax_analysis": "Analyze GST components separately (CGST, SGST, IGST, UTGST)",
+                "order_counts": "For unique order counts, always use COUNT(DISTINCT FAOrderId)"
             }
         },
         "query_examples": {
-            "basic_queries": [
-                "Show total sales for January 2024 (OrderDateKey BETWEEN 20240101 AND 20240131)",
-                "Compare orders vs invoices for last quarter (OrderDateKey and InvoiceDateKey analysis)",
-                "Find products with highest demand in specific date range"
-            ],
-            "advanced_queries": [
-                "Analyze order to invoice processing time using OrderDateKey and InvoiceDateKey difference",
-                "Track seasonal trends using OrderDateKey patterns",
-                "Compare year-over-year performance using OrderDateKey ranges"
-            ]
+            "date_based_queries": {
+                "order_analysis": [
+                    "SELECT COUNT(DISTINCT FAOrderId) as UniqueOrderCount FROM ProductWiseDemandSales WHERE OrderDateKey BETWEEN 20241101 AND 20241130 AND CompanyId = 10830",
+                    "SELECT OrderDateKey, COUNT(DISTINCT FAOrderId) as UniqueOrderCount FROM ProductWiseDemandSales WHERE OrderDateKey BETWEEN 20241101 AND 20241130 GROUP BY OrderDateKey"
+                ],
+                "invoice_analysis": [
+                    "SELECT ProductId, SUM(InvoiceTotalValue) as TotalInvoiceValue FROM ProductWiseDemandSales WHERE InvoiceDateKey = 20240225 GROUP BY ProductId",
+                    "SELECT ProductId, SUM(InvoiceTotalValue) as TotalInvoiceValue FROM ProductWiseDemandSales WHERE InvoiceDateKey BETWEEN 20240101 AND 20240131 GROUP BY ProductId"
+                ]
+            },
+            "scheme_analysis": {
+                "discount_queries": [
+                    "SELECT ProductId, SUM(PrimarySchemeDiscountInInvoice) as PrimaryDiscount, SUM(SecondarySchemeDiscountInInvoice) as SecondaryDiscount FROM ProductWiseDemandSales WHERE InvoiceDateKey = 20240225 GROUP BY ProductId",
+                    "SELECT ProductId, SUM(TotalSchemeDiscountInInvoice) as TotalDiscount FROM ProductWiseDemandSales WHERE InvoiceDateKey BETWEEN 20240101 AND 20240131 GROUP BY ProductId"
+                ]
+            },
+            "tax_analysis": {
+                "gst_queries": [
+                    "SELECT ProductId, SUM(InvoiceCGST) as TotalCGST, SUM(InvoiceSGST) as TotalSGST FROM ProductWiseDemandSales WHERE InvoiceDateKey = 20240225 GROUP BY ProductId",
+                    "SELECT ProductId, SUM(InvoiceCGST + InvoiceSGST + InvoiceIGST + InvoiceUTGST) as TotalGST FROM ProductWiseDemandSales WHERE InvoiceDateKey BETWEEN 20240101 AND 20240131 GROUP BY ProductId"
+                ]
+            }
         }
     }
 }
